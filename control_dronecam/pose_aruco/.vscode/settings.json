@@ -1,0 +1,20 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/mateus/ros2_ws/install/control_dronecam/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/control_droneCam/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/anafi_autonomy/local/lib/python3.10/dist-packages",
+        "/home/mateus/ros2_ws/install/anafi_ros_nodes/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/anafi_ros_interfaces/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/mateus/ros2_ws/install/control_dronecam/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/control_droneCam/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/anafi_autonomy/local/lib/python3.10/dist-packages",
+        "/home/mateus/ros2_ws/install/anafi_ros_nodes/lib/python3.10/site-packages",
+        "/home/mateus/ros2_ws/install/anafi_ros_interfaces/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}

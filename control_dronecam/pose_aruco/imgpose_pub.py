@@ -11,21 +11,29 @@ from std_msgs.msg import Header
 import numpy as np
 import cv2
 from cv_bridge import CvBridge
+from typing import Tuple, Optional
 
 
-def intrinsic(data):
-    K = np.reshape(data.p, (3, 4))
-    intrinsic = np.delete(K, 3, 1)
-    return intrinsic
+def extract_intrinsics(camera_info: CameraInfo) -> np.ndarray:
+    """Extracts the intrinsic camera matrix from CameraInfo."""
+    K = np.reshape(camera_info.p, (3, 4))
+    intrinsic_matrix = np.delete(K, 3, 1)
+    return intrinsic_matrix
 
 
-def pose_img(frame, msg_calib, msg_gimbal, marker_length, arucoDict, parameters):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    K = intrinsic(data=msg_calib)
-    D = np.array(msg_calib.d)
-    angles_cam = None
-    T = None
-    Ry = np.array(
+def compute_pose_from_image(
+    frame: np.ndarray,
+    camera_info: CameraInfo,
+    gimbal_data: Vector3Stamped,
+    marker_length: float,
+    aruco_dict: cv2.aruco.Dictionary,
+    detector_params: cv2.aruco.DetectorParameters,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Computes pose from the detected ArUco markers in the image."""
+    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    K = extract_intrinsics(camera_info)
+    D = np.array(camera_info.d)
+    R_yaw_90 = np.array(
         [
             [np.cos(np.pi / 2), 0, np.sin(np.pi / 2), 0],
             [0, 1, 0, 0],
@@ -33,7 +41,7 @@ def pose_img(frame, msg_calib, msg_gimbal, marker_length, arucoDict, parameters)
             [0, 0, 0, 1],
         ]
     )
-    Rx = np.array(
+    R_pitch_neg_90 = np.array(
         [
             [1, 0, 0, 0],
             [0, np.cos(-np.pi / 2), -np.sin(-np.pi / 2), 0],
@@ -42,9 +50,9 @@ def pose_img(frame, msg_calib, msg_gimbal, marker_length, arucoDict, parameters)
         ]
     )
     corners, ids, _ = cv2.aruco.detectMarkers(
-        image=gray,
-        dictionary=arucoDict,
-        parameters=parameters,
+        image=gray_image,
+        dictionary=aruco_dict,
+        parameters=detector_params,
     )
     img_marked = cv2.aruco.drawDetectedMarkers(frame, corners)
     if ids is not None:
@@ -54,78 +62,70 @@ def pose_img(frame, msg_calib, msg_gimbal, marker_length, arucoDict, parameters)
             cameraMatrix=K,
             distCoeffs=D,
         )
-        R_cam, _ = cv2.Rodrigues(rvec)
+        rotation_camera, _ = cv2.Rodrigues(rvec)
         tvec = tvec.reshape(3, 1)
-        RT = np.hstack((R_cam, tvec))
-        RT = np.vstack((RT, np.array([[0, 0, 0, 1]])))
-        R_gimbal, _ = cv2.Rodrigues(
-            np.array(
+        camera_to_marker = np.hstack((rotation_camera, tvec))
+        camera_to_marker = np.vstack((camera_to_marker, np.array([[0, 0, 0, 1]])))
+        rotation_gimbal, _ = cv2.Rodrigues(
+            np.radians(
                 [
-                    np.radians(msg_gimbal.vector.x),
-                    np.radians(msg_gimbal.vector.y),
+                    gimbal_data.vector.x,
+                    gimbal_data.vector.y,
                     0,
                 ]
             )
         )
-        R_gimbal = np.hstack((R_gimbal, np.array([[0], [0], [0]])))
-        R_gimbal = np.vstack((R_gimbal, np.array([[0, 0, 0, 1]])))
-        M = R_gimbal @ Rx @ Ry @ RT
-        R = M[0:3, 0:3]
-        T = M[:3, 3]
-        _, _, _, _, _, _, angles_cam = cv2.decomposeProjectionMatrix(
-            np.hstack((R, np.zeros((3, 1))))
+        gimbal_to_drone = np.hstack((rotation_gimbal, np.zeros((3, 1))))
+        gimbal_to_drone = np.vstack((gimbal_to_drone, np.array([[0, 0, 0, 1]])))
+        combined_transformation = (
+            gimbal_to_drone @ R_pitch_neg_90 @ R_yaw_90 @ camera_to_marker
         )
-        angles_cam = np.radians(angles_cam.T)
+        rotation_matrix = combined_transformation[:3, :3]
+        translation_vector = combined_transformation[:3, 3]
+        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
+            np.hstack((rotation_matrix, np.zeros((3, 1))))
+        )
+        euler_angles = np.radians(euler_angles.T)
         cv2.drawFrameAxes(
             image=img_marked,
             cameraMatrix=K,
             distCoeffs=D,
             rvec=rvec,
             tvec=tvec,
-            length=10,
+            length=marker_length,
         )
-    return img_marked, angles_cam, T
+        return img_marked, euler_angles, translation_vector
+
+    return img_marked, None, None
 
 
-class Subscriber(SimpleFilter):
-
-    def __init__(self, *args, **kwargs):
-        SimpleFilter.__init__(self)
-        self.node = args[0]
-        self.topic = args[2]
-        self.sub = self.node.create_subscription(
-            *args[1:3], self.callback, qos_profile=args[3]
+class ROS2Subscriber(SimpleFilter):
+    def __init__(self, node: Node, msg_type, topic_name: str, qos_profile: QoSProfile):
+        super().__init__()
+        self.node = node
+        self.topic_name = topic_name
+        self.subscription = self.node.create_subscription(
+            msg_type, topic_name, self.callback, qos_profile
         )
 
     def callback(self, msg):
         self.signalMessage(msg)
 
-    def getTopic(self):
-        return self.topic
-
-    def __getattr__(self, key):
-        return self.sub.__getattribute__(key)
+    def get_topic_name(self) -> str:
+        return self.topic_name
 
 
-class Imageconsumer(Node):
-
-    def parameter_callback(self, parameters):
-        for param in parameters:
-            if param.name == "aruco_dict":
-                self.dict_aruco = param.value
-                self.get_logger().info(
-                    f"Updated type aruco dictionary {self.dict_aruco}"
-                )
-            elif param.name == "marker_length":
-                self.marker_length = param.value
-                self.get_logger().info(f"Updated lenght aruco {self.marker_length}")
-            else:
-                return SetParametersResult(successful=False)
-        return SetParametersResult(successful=True)
-
+class ImageProcessor(Node):
     def __init__(self):
-        super().__init__("imgcalib_pub")
-        map_dictAruco = {
+        super().__init__("image_processor")
+        self.declare_ros_parameters()
+        self.setup_subscribers()
+        self.setup_publishers()
+        self.br = CvBridge()
+        self.get_logger().info("Image Processor Node initialized.")
+
+    def declare_ros_parameters(self):
+        aruco_dict_mapping = {
             "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
             "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
             "DICT_4X4_250": cv2.aruco.DICT_4X4_250,
@@ -144,8 +144,6 @@ class Imageconsumer(Node):
             "DICT_7X7_1000": cv2.aruco.DICT_7X7_1000,
             "DICT_ARUCO_ORIGINAL": cv2.aruco.DICT_ARUCO_ORIGINAL,
         }
-
-        # Parameter
         self.declare_parameters(
             namespace="",
             parameters=[
@@ -157,111 +155,123 @@ class Imageconsumer(Node):
                 (
                     "marker_length",
                     30,
-                    ParameterDescriptor(description=" Size of the aruco"),
+                    ParameterDescriptor(description="Size of the ArUco marker"),
                 ),
             ],
         )
-        self.dict_aruco = map_dictAruco[self.get_parameter("aruco_dict").value]
+        self.aruco_dict = aruco_dict_mapping[self.get_parameter("aruco_dict").value]
         self.marker_length = self.get_parameter("marker_length").value
-        self.add_on_set_parameters_callback(self.parameter_callback)
+        self.add_on_set_parameters_callback(self.on_parameter_update)
 
-        # Subscriber
-        qos_profile_subscriber_best = QoSProfile(
+    def on_parameter_update(self, parameters):
+        for param in parameters:
+            if param.name == "aruco_dict":
+                self.aruco_dict = param.value
+                self.get_logger().info(f"Updated ArUco dictionary to {self.aruco_dict}")
+            elif param.name == "marker_length":
+                self.marker_length = param.value
+                self.get_logger().info(f"Updated marker length to {self.marker_length}")
+            else:
+                return SetParametersResult(successful=False)
+        return SetParametersResult(successful=True)
+
+    def setup_subscribers(self):
+        qos_profile_best_effort = QoSProfile(
             depth=1,
             history=HistoryPolicy.KEEP_LAST,
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
-        qos_profile_subscriber_reliable = QoSProfile(
-            depth=10, reliability=ReliabilityPolicy.RELIABLE
+        qos_profile_reliable = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
         )
-        image_consume = Subscriber(
+        self.image_sub = ROS2Subscriber(
             self,
-            Image,
-            "/anafi/camera/image",
-            qos_profile_subscriber_best,
+            msg_type=Image,
+            topic_name="/anafi/camera/image",
+            qos_profile=qos_profile_best_effort,
         )
-        calib_consume = Subscriber(
+        self.camera_info_sub = ROS2Subscriber(
             self,
-            CameraInfo,
-            "/anafi/camera/camera_info",
-            qos_profile_subscriber_reliable,
+            msg_type=CameraInfo,
+            topic_name="/anafi/camera/camera_info",
+            qos_profile=qos_profile_reliable,
         )
-        gimbal_consume = Subscriber(
+        self.gimbal_sub = ROS2Subscriber(
             self,
-            Vector3Stamped,
-            "anafi/gimbal/rpy",
-            qos_profile_subscriber_best,
+            msg_type=Vector3Stamped,
+            topic_name="/anafi/gimbal/rpy",
+            qos_profile=qos_profile_best_effort,
         )
 
-        # Publisher
-        self.pub_img = self.create_publisher(
+        self.ts = ApproximateTimeSynchronizer(
+            fs=[self.image_sub, self.camera_info_sub, self.gimbal_sub],
+            queue_size=10,
+            slop=0.1,
+        )
+        self.ts.registerCallback(self.on_synchronized_messages)
+        self.arucoDict = cv2.aruco.getPredefinedDictionary(self.aruco_dict)
+        self.aruco_detector_params = cv2.aruco.DetectorParameters()
+        self.aruco_detector = cv2.aruco.ArucoDetector(
+            dictionary=self.arucoDict,
+            detectorParams=self.aruco_detector_params,
+        )
+
+    def setup_publishers(self):
+        self.image_pub = self.create_publisher(
             msg_type=Image,
             topic="/anafi/camera/image_aruco",
             qos_profile=10,
         )
-        self.pose_aruco2Cam = self.create_publisher(
+        self.pose_pub = self.create_publisher(
             msg_type=Odometry,
             topic="/anafi/pose/aruco2cam",
             qos_profile=10,
         )
-        self.imageMsg = Image()
-        self.odomMsg = Odometry()
-        self.br = CvBridge()
-        self.get_logger().info(
-            "Created publisher of the image of the aruco and the position of the aruco in relation to the camera."
-        )
-        self.ts = ApproximateTimeSynchronizer(
-            fs=[image_consume, calib_consume, gimbal_consume],
-            queue_size=10,
-            slop=0.1,
-        )
-        self.ts.registerCallback(self.callback)
-        self.arucoDict = cv2.aruco.getPredefinedDictionary(self.dict_aruco)
-        self.parameters = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(self.arucoDict, self.parameters)
-        self.get_logger().info("Package initialized")
 
-    def callback(self, msg_img, msg_calib, msg_gimbal):
+    def on_synchronized_messages(
+        self,
+        image_msg: Image,
+        camera_info_msg: CameraInfo,
+        gimbal_msg: Vector3Stamped,
+    ):
         try:
-            frame = self.br.imgmsg_to_cv2(msg_img, "bgr8")
-
-            self.img_marked, self.R, self.T = pose_img(
-                frame,
-                msg_calib,
-                msg_gimbal,
-                self.marker_length,
-                self.arucoDict,
-                self.parameters,
+            frame = self.br.imgmsg_to_cv2(image_msg, "bgr8")
+            marked_frame, rotation, translation = compute_pose_from_image(
+                frame=frame,
+                camera_info=camera_info_msg,
+                gimbal_data=gimbal_msg,
+                marker_length=self.marker_length,
+                aruco_dict=self.arucoDict,
+                detector_params=self.aruco_detector_params,
             )
-        except:
-            self.get_logger().info("Frame lost")
+        except Exception as e:
+            self.get_logger().error(f"Error processing frame: {str(e)}")
 
-    def publisher(self):
-        self.imageMsg = self.br.cv2_to_imgmsg(self.img_marked, encoding="bgr8")
-        self.pub_img.publish(self.imageMsg)
+        self.publish_pose(translation=translation, rotation=rotation)
+        image_msg_out = self.br.cv2_to_imgmsg(marked_frame, encoding="bgr8")
+        self.image_pub.publish(image_msg_out)
 
-        if self.R is not None and self.T is not None:
-            self.odomMsg.header = Header()
-            self.odomMsg.header.stamp = self.get_clock().now().to_msg()
-            self.odomMsg.header.frame_id = "/drone"
-            self.odomMsg.pose.pose.position.x = self.T[0]
-            self.odomMsg.pose.pose.position.y = self.T[1]
-            self.odomMsg.pose.pose.position.z = self.T[2]
-            self.odomMsg.pose.pose.orientation.x = self.R[0][0]
-            self.odomMsg.pose.pose.orientation.y = self.R[0][1]
-            self.odomMsg.pose.pose.orientation.z = self.R[0][2]
-            print(self.odomMsg.pose.pose)
-        else:
-            self.get_logger().info("Aruco not detected.")
-            self.odomMsg = Odometry()
-        self.pose_aruco2Cam.publish(self.odomMsg)
+    def publish_pose(self, translation: np.ndarray, rotation: np.ndarray):
+        odom_msg = Odometry()
+        odom_msg.header = Header()
+        odom_msg.header.stamp = self.get_clock().now().to_msg()
+        odom_msg.header.frame_id = "drone"
+        if rotation is not None and translation is not None:
+            odom_msg.pose.pose.position.x = translation[0]
+            odom_msg.pose.pose.position.y = translation[1]
+            odom_msg.pose.pose.position.z = translation[2]
+            odom_msg.pose.pose.orientation.x = rotation[0][0]
+            odom_msg.pose.pose.orientation.y = rotation[0][1]
+            odom_msg.pose.pose.orientation.z = rotation[0][2]
+        self.pose_pub.publish(odom_msg)
 
 
 def main():
     rclpy.init()
-    image = Imageconsumer()
-    rclpy.spin(image)
-    image.destroy_node()
+    node = ImageProcessor()
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
 
 
