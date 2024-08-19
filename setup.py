@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imgpose_pub = control_dronecam.pose_aruco.imgpose_pub:main',
+            'test = control_dronecam.pose_aruco.test:main',
             'control_parrot_keyboard = control_dronecam.control_parrot.control_parrot_keyboard:main',
             'keyboad_publish = control_dronecam.control_parrot.keyboad_publish:main',
             'control_parrot_angle = control_dronecam.control_parrot.control_parrot_angle:main',

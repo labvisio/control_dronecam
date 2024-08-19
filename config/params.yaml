@@ -1,0 +1,6 @@
+image_processor:
+  ros__parameters:
+    aruco_dict: DICT_4X4_100
+    aruco_id: 0
+    marker_lenght: 30
+    

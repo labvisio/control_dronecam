@@ -27,6 +27,7 @@ def compute_pose_from_image(
     gimbal_data: Vector3Stamped,
     marker_length: float,
     aruco_dict: cv2.aruco.Dictionary,
+    aruco_id: float,
     detector_params: cv2.aruco.DetectorParameters,
 ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """Computes pose from the detected ArUco markers in the image."""
@@ -55,46 +56,48 @@ def compute_pose_from_image(
         parameters=detector_params,
     )
     img_marked = cv2.aruco.drawDetectedMarkers(frame, corners)
+    # print(aruco_id)
     if ids is not None:
-        rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners=corners,
-            markerLength=marker_length,
-            cameraMatrix=K,
-            distCoeffs=D,
-        )
-        rotation_camera, _ = cv2.Rodrigues(rvec)
-        tvec = tvec.reshape(3, 1)
-        camera_to_marker = np.hstack((rotation_camera, tvec))
-        camera_to_marker = np.vstack((camera_to_marker, np.array([[0, 0, 0, 1]])))
-        rotation_gimbal, _ = cv2.Rodrigues(
-            np.radians(
-                [
-                    gimbal_data.vector.x,
-                    gimbal_data.vector.y,
-                    0,
-                ]
+        if ids[0] == aruco_id:
+            rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                corners=corners,
+                markerLength=marker_length,
+                cameraMatrix=K,
+                distCoeffs=D,
             )
-        )
-        gimbal_to_drone = np.hstack((rotation_gimbal, np.zeros((3, 1))))
-        gimbal_to_drone = np.vstack((gimbal_to_drone, np.array([[0, 0, 0, 1]])))
-        combined_transformation = (
-            gimbal_to_drone @ R_pitch_neg_90 @ R_yaw_90 @ camera_to_marker
-        )
-        rotation_matrix = combined_transformation[:3, :3]
-        translation_vector = combined_transformation[:3, 3]
-        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
-            np.hstack((rotation_matrix, np.zeros((3, 1))))
-        )
-        euler_angles = np.radians(euler_angles.T)
-        cv2.drawFrameAxes(
-            image=img_marked,
-            cameraMatrix=K,
-            distCoeffs=D,
-            rvec=rvec,
-            tvec=tvec,
-            length=marker_length,
-        )
-        return img_marked, euler_angles, translation_vector
+            rotation_camera, _ = cv2.Rodrigues(rvec)
+            tvec = tvec.reshape(3, 1)
+            camera_to_marker = np.hstack((rotation_camera, tvec))
+            camera_to_marker = np.vstack((camera_to_marker, np.array([[0, 0, 0, 1]])))
+            rotation_gimbal, _ = cv2.Rodrigues(
+                np.radians(
+                    [
+                        gimbal_data.vector.x,
+                        gimbal_data.vector.y,
+                        0,
+                    ]
+                )
+            )
+            gimbal_to_drone = np.hstack((rotation_gimbal, np.zeros((3, 1))))
+            gimbal_to_drone = np.vstack((gimbal_to_drone, np.array([[0, 0, 0, 1]])))
+            combined_transformation = (
+                gimbal_to_drone @ R_pitch_neg_90 @ R_yaw_90 @ camera_to_marker
+            )
+            rotation_matrix = combined_transformation[:3, :3]
+            translation_vector = combined_transformation[:3, 3]
+            _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
+                np.hstack((rotation_matrix, np.zeros((3, 1))))
+            )
+            euler_angles = np.radians(euler_angles.T)
+            cv2.drawFrameAxes(
+                image=img_marked,
+                cameraMatrix=K,
+                distCoeffs=D,
+                rvec=rvec,
+                tvec=tvec,
+                length=marker_length,
+            )
+            return img_marked, euler_angles, translation_vector
 
     return img_marked, None, None
 
@@ -157,10 +160,16 @@ class ImageProcessor(Node):
                     30,
                     ParameterDescriptor(description="Size of the ArUco marker"),
                 ),
+                (
+                    "aruco_id",
+                    0,
+                    ParameterDescriptor(description="Id aruco"),
+                ),
             ],
         )
         self.aruco_dict = aruco_dict_mapping[self.get_parameter("aruco_dict").value]
         self.marker_length = self.get_parameter("marker_length").value
+        self.aruco_id = self.get_parameter("aruco_id").value
         self.add_on_set_parameters_callback(self.on_parameter_update)
 
     def on_parameter_update(self, parameters):
@@ -171,6 +180,9 @@ class ImageProcessor(Node):
             elif param.name == "marker_length":
                 self.marker_length = param.value
                 self.get_logger().info(f"Updated marker length to {self.marker_length}")
+            elif param.name == "aruco_id":
+                self.aruco_id = param.value
+                self.get_logger().info(f"Update ArUco id to {self.aruco_id}")
             else:
                 return SetParametersResult(successful=False)
         return SetParametersResult(successful=True)
@@ -243,14 +255,22 @@ class ImageProcessor(Node):
                 gimbal_data=gimbal_msg,
                 marker_length=self.marker_length,
                 aruco_dict=self.arucoDict,
+                aruco_id=self.aruco_id,
                 detector_params=self.aruco_detector_params,
             )
         except Exception as e:
             self.get_logger().error(f"Error processing frame: {str(e)}")
 
         self.publish_pose(translation=translation, rotation=rotation)
-        image_msg_out = self.br.cv2_to_imgmsg(marked_frame, encoding="bgr8")
-        self.image_pub.publish(image_msg_out)
+        self.publish_image(image=marked_frame)
+
+    def publish_image(self, image: np.ndarray):
+        img_msg = Image()
+        img_msg.header = Header()
+        img_msg.header.stamp = self.get_clock().now().to_msg()
+        img_msg.header.frame_id = "camera"
+        img_msg = self.br.cv2_to_imgmsg(image, encoding="bgr8")
+        self.image_pub.publish(img_msg)
 
     def publish_pose(self, translation: np.ndarray, rotation: np.ndarray):
         odom_msg = Odometry()
