@@ -56,48 +56,50 @@ def compute_pose_from_image(
         parameters=detector_params,
     )
     img_marked = cv2.aruco.drawDetectedMarkers(frame, corners)
-    # print(aruco_id)
     if ids is not None:
-        if ids[0] == aruco_id:
-            rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
-                corners=corners,
-                markerLength=marker_length,
-                cameraMatrix=K,
-                distCoeffs=D,
-            )
-            rotation_camera, _ = cv2.Rodrigues(rvec)
-            tvec = tvec.reshape(3, 1)
-            camera_to_marker = np.hstack((rotation_camera, tvec))
-            camera_to_marker = np.vstack((camera_to_marker, np.array([[0, 0, 0, 1]])))
-            rotation_gimbal, _ = cv2.Rodrigues(
-                np.radians(
-                    [
-                        gimbal_data.vector.x,
-                        gimbal_data.vector.y,
-                        0,
-                    ]
+        for id, corner in zip(ids, corners):
+            if id == aruco_id:
+                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                    corners=corner,
+                    markerLength=marker_length,
+                    cameraMatrix=K,
+                    distCoeffs=D,
                 )
-            )
-            gimbal_to_drone = np.hstack((rotation_gimbal, np.zeros((3, 1))))
-            gimbal_to_drone = np.vstack((gimbal_to_drone, np.array([[0, 0, 0, 1]])))
-            combined_transformation = (
-                gimbal_to_drone @ R_pitch_neg_90 @ R_yaw_90 @ camera_to_marker
-            )
-            rotation_matrix = combined_transformation[:3, :3]
-            translation_vector = combined_transformation[:3, 3]
-            _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
-                np.hstack((rotation_matrix, np.zeros((3, 1))))
-            )
-            euler_angles = np.radians(euler_angles.T)
-            cv2.drawFrameAxes(
-                image=img_marked,
-                cameraMatrix=K,
-                distCoeffs=D,
-                rvec=rvec,
-                tvec=tvec,
-                length=marker_length,
-            )
-            return img_marked, euler_angles, translation_vector
+                rotation_camera, _ = cv2.Rodrigues(rvec)
+                tvec = tvec.reshape(3, 1)
+                camera_to_marker = np.hstack((rotation_camera, tvec))
+                camera_to_marker = np.vstack(
+                    (camera_to_marker, np.array([[0, 0, 0, 1]]))
+                )
+                rotation_gimbal, _ = cv2.Rodrigues(
+                    np.radians(
+                        [
+                            gimbal_data.vector.x,
+                            gimbal_data.vector.y,
+                            0,
+                        ]
+                    )
+                )
+                gimbal_to_drone = np.hstack((rotation_gimbal, np.zeros((3, 1))))
+                gimbal_to_drone = np.vstack((gimbal_to_drone, np.array([[0, 0, 0, 1]])))
+                combined_transformation = (
+                    gimbal_to_drone @ R_pitch_neg_90 @ R_yaw_90 @ camera_to_marker
+                )
+                rotation_matrix = combined_transformation[:3, :3]
+                translation_vector = combined_transformation[:3, 3]
+                _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
+                    np.hstack((rotation_matrix, np.zeros((3, 1))))
+                )
+                euler_angles = np.radians(euler_angles.T)
+                cv2.drawFrameAxes(
+                    image=img_marked,
+                    cameraMatrix=K,
+                    distCoeffs=D,
+                    rvec=rvec,
+                    tvec=tvec,
+                    length=marker_length,
+                )
+                return img_marked, euler_angles, translation_vector
 
     return img_marked, None, None
 
