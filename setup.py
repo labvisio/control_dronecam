@@ -27,8 +27,6 @@ setup(
             "test = control_dronecam.pose_aruco.test:main",
             "control_parrot_keyboard = control_dronecam.control_parrot.control_parrot_keyboard:main",
             "keyboad_publish = control_dronecam.control_parrot.keyboad_publish:main",
-            "control_parrot_angle = control_dronecam.control_parrot.control_parrot_angle:main",
-            "control_parrot_angle2 = control_dronecam.control_parrot.control_parrot_angle2:main",
             "control_parrot_aruco = control_dronecam.control_parrot.control_parrot_aruco:main",
         ],
     },
