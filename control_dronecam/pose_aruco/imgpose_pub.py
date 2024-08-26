@@ -1,11 +1,11 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import Vector3Stamped
-from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from message_filters import ApproximateTimeSynchronizer, SimpleFilter
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
+from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import Vector3Stamped
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
 import numpy as np
@@ -100,7 +100,6 @@ def compute_pose_from_image(
                     length=marker_length,
                 )
                 return img_marked, euler_angles, translation_vector
-
     return img_marked, None, None
 
 
@@ -124,10 +123,16 @@ class ImageProcessor(Node):
     def __init__(self):
         super().__init__("image_processor")
         self.declare_ros_parameters()
+        self.arucoDict = cv2.aruco.getPredefinedDictionary(self.aruco_dict)
+        self.aruco_detector_params = cv2.aruco.DetectorParameters()
+        self.aruco_detector = cv2.aruco.ArucoDetector(
+            dictionary=self.arucoDict,
+            detectorParams=self.aruco_detector_params,
+        )
         self.setup_subscribers()
         self.setup_publishers()
         self.br = CvBridge()
-        self.get_logger().info("Image Processor Node initialized.")
+        self.msg_gimbal_ok = False
 
     def declare_ros_parameters(self):
         aruco_dict_mapping = {
@@ -154,23 +159,23 @@ class ImageProcessor(Node):
             parameters=[
                 (
                     "aruco_dict",
-                    "DICT_4X4_100",
+                    rclpy.Parameter.Type.STRING,
                     ParameterDescriptor(description="Aruco dictionary"),
                 ),
                 (
-                    "marker_length",
-                    30,
+                    "marker_lenght",
+                    rclpy.Parameter.Type.INTEGER,
                     ParameterDescriptor(description="Size of the ArUco marker"),
                 ),
                 (
                     "aruco_id",
-                    0,
+                    rclpy.Parameter.Type.INTEGER,
                     ParameterDescriptor(description="Id aruco"),
                 ),
             ],
         )
         self.aruco_dict = aruco_dict_mapping[self.get_parameter("aruco_dict").value]
-        self.marker_length = self.get_parameter("marker_length").value
+        self.marker_length = self.get_parameter("marker_lenght").value
         self.aruco_id = self.get_parameter("aruco_id").value
         self.add_on_set_parameters_callback(self.on_parameter_update)
 
@@ -199,36 +204,27 @@ class ImageProcessor(Node):
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
         )
-        self.image_sub = ROS2Subscriber(
-            self,
+        self.image_sub = self.create_subscription(
             msg_type=Image,
-            topic_name="/anafi/camera/image",
+            topic="/anafi/camera/image",
+            callback=self.image_sub_callback,
             qos_profile=qos_profile_best_effort,
         )
-        self.camera_info_sub = ROS2Subscriber(
-            self,
+        self.camera_info_sub = self.create_subscription(
             msg_type=CameraInfo,
-            topic_name="/anafi/camera/camera_info",
+            topic="/anafi/camera/camera_info",
+            callback=self.image_info_callback,
             qos_profile=qos_profile_reliable,
         )
-        self.gimbal_sub = ROS2Subscriber(
-            self,
+        self.gimbal_info_sub = self.create_subscription(
             msg_type=Vector3Stamped,
-            topic_name="/anafi/gimbal/rpy",
+            topic="/anafi/gimbal/rpy_slow/relative",
+            callback=self.gimbal_info_callback,
             qos_profile=qos_profile_best_effort,
         )
-
-        self.ts = ApproximateTimeSynchronizer(
-            fs=[self.image_sub, self.camera_info_sub, self.gimbal_sub],
-            queue_size=10,
-            slop=0.1,
-        )
-        self.ts.registerCallback(self.on_synchronized_messages)
-        self.arucoDict = cv2.aruco.getPredefinedDictionary(self.aruco_dict)
-        self.aruco_detector_params = cv2.aruco.DetectorParameters()
-        self.aruco_detector = cv2.aruco.ArucoDetector(
-            dictionary=self.arucoDict,
-            detectorParams=self.aruco_detector_params,
+        self.timer = self.create_timer(
+            timer_period_sec=0.033,
+            callback=self.publish_message,
         )
 
     def setup_publishers(self):
@@ -243,28 +239,37 @@ class ImageProcessor(Node):
             qos_profile=10,
         )
 
-    def on_synchronized_messages(
-        self,
-        image_msg: Image,
-        camera_info_msg: CameraInfo,
-        gimbal_msg: Vector3Stamped,
-    ):
-        try:
-            frame = self.br.imgmsg_to_cv2(image_msg, "bgr8")
-            marked_frame, rotation, translation = compute_pose_from_image(
-                frame=frame,
-                camera_info=camera_info_msg,
-                gimbal_data=gimbal_msg,
-                marker_length=self.marker_length,
-                aruco_dict=self.arucoDict,
-                aruco_id=self.aruco_id,
-                detector_params=self.aruco_detector_params,
-            )
-        except Exception as e:
-            self.get_logger().error(f"Error processing frame: {str(e)}")
+    def image_sub_callback(self, image):
+        self.frame = self.br.imgmsg_to_cv2(image, "bgr8")
 
-        self.publish_pose(translation=translation, rotation=rotation)
-        self.publish_image(image=marked_frame)
+    def image_info_callback(self, info_camera):
+        self.camera_info_msg = info_camera
+
+    def gimbal_info_callback(self, rpy_gimbal):
+        if not self.msg_gimbal_ok:
+            self.msg_gimbal_ok = True
+            self.get_logger().info("Image Processor Node initialized.")
+        self.gimbal_msg = rpy_gimbal
+
+    def publish_message(self):
+        if self.msg_gimbal_ok:
+            try:
+                marked_frame, rotation, translation = compute_pose_from_image(
+                    frame=self.frame,
+                    camera_info=self.camera_info_msg,
+                    gimbal_data=self.gimbal_msg,
+                    marker_length=self.marker_length,
+                    aruco_dict=self.arucoDict,
+                    aruco_id=self.aruco_id,
+                    detector_params=self.aruco_detector_params,
+                )
+                self.publish_pose(translation=translation, rotation=rotation)
+                self.publish_image(image=marked_frame)
+            except:
+                self.get_logger().info("frame not processed")
+                pass
+        else:
+            pass
 
     def publish_image(self, image: np.ndarray):
         img_msg = Image()
