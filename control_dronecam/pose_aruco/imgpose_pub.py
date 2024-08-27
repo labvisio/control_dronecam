@@ -106,6 +106,7 @@ def compute_pose_from_image(
 class ImageProcessor(Node):
     def __init__(self):
         super().__init__("image_processor")
+        self.get_logger().info("Image Processor Node initialized.")
         self.br = CvBridge()
         self.declare_ros_parameters()
         self.arucoDict = cv2.aruco.getPredefinedDictionary(self.aruco_dict)
@@ -117,7 +118,6 @@ class ImageProcessor(Node):
         self.msg_gimbal_ok = False
         self.setup_subscribers()
         self.setup_publishers()
-        self.get_logger().info("Image Processor Node initialized.")
 
     def declare_ros_parameters(self):
         aruco_dict_mapping = {
@@ -163,7 +163,7 @@ class ImageProcessor(Node):
         self.marker_length = self.get_parameter("marker_lenght").value
         self.aruco_id = self.get_parameter("aruco_id").value
         self.add_on_set_parameters_callback(self.on_parameter_update)
-        self.get_logger().error(
+        self.get_logger().info(
             f"ArUco dictionary: {self.aruco_dict} and ArUco id: {self.aruco_id}"
         )
 
@@ -255,7 +255,7 @@ class ImageProcessor(Node):
                 self.publish_pose(translation=translation, rotation=rotation)
                 self.publish_image(image=marked_frame)
             except:
-                self.get_logger().error(f"Error processing frame")
+                pass
         else:
             pass
 

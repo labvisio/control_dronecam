@@ -14,7 +14,7 @@ def generate_launch_description():
         package="control_dronecam",
         namespace="",
         executable="imgpose_pub",
-        name="pose_aruco",
+        name="image_processor",
         parameters=[config],
     )
 
