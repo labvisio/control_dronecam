@@ -103,25 +103,10 @@ def compute_pose_from_image(
     return img_marked, None, None
 
 
-class ROS2Subscriber(SimpleFilter):
-    def __init__(self, node: Node, msg_type, topic_name: str, qos_profile: QoSProfile):
-        super().__init__()
-        self.node = node
-        self.topic_name = topic_name
-        self.subscription = self.node.create_subscription(
-            msg_type, topic_name, self.callback, qos_profile
-        )
-
-    def callback(self, msg):
-        self.signalMessage(msg)
-
-    def get_topic_name(self) -> str:
-        return self.topic_name
-
-
 class ImageProcessor(Node):
     def __init__(self):
         super().__init__("image_processor")
+        self.br = CvBridge()
         self.declare_ros_parameters()
         self.arucoDict = cv2.aruco.getPredefinedDictionary(self.aruco_dict)
         self.aruco_detector_params = cv2.aruco.DetectorParameters()
@@ -129,10 +114,10 @@ class ImageProcessor(Node):
             dictionary=self.arucoDict,
             detectorParams=self.aruco_detector_params,
         )
+        self.msg_gimbal_ok = False
         self.setup_subscribers()
         self.setup_publishers()
-        self.br = CvBridge()
-        self.msg_gimbal_ok = False
+        self.get_logger().info("Image Processor Node initialized.")
 
     def declare_ros_parameters(self):
         aruco_dict_mapping = {
@@ -178,6 +163,9 @@ class ImageProcessor(Node):
         self.marker_length = self.get_parameter("marker_lenght").value
         self.aruco_id = self.get_parameter("aruco_id").value
         self.add_on_set_parameters_callback(self.on_parameter_update)
+        self.get_logger().error(
+            f"ArUco dictionary: {self.aruco_dict} and ArUco id: {self.aruco_id}"
+        )
 
     def on_parameter_update(self, parameters):
         for param in parameters:
@@ -240,7 +228,7 @@ class ImageProcessor(Node):
         )
 
     def image_sub_callback(self, image):
-        self.frame = self.br.imgmsg_to_cv2(image, "bgr8")
+        self.image = image
 
     def image_info_callback(self, info_camera):
         self.camera_info_msg = info_camera
@@ -248,14 +236,15 @@ class ImageProcessor(Node):
     def gimbal_info_callback(self, rpy_gimbal):
         if not self.msg_gimbal_ok:
             self.msg_gimbal_ok = True
-            self.get_logger().info("Image Processor Node initialized.")
+            self.get_logger().info("Gimbal initialized")
         self.gimbal_msg = rpy_gimbal
 
     def publish_message(self):
         if self.msg_gimbal_ok:
             try:
+                frame = self.br.imgmsg_to_cv2(self.image, "bgr8")
                 marked_frame, rotation, translation = compute_pose_from_image(
-                    frame=self.frame,
+                    frame=frame,
                     camera_info=self.camera_info_msg,
                     gimbal_data=self.gimbal_msg,
                     marker_length=self.marker_length,
@@ -266,8 +255,7 @@ class ImageProcessor(Node):
                 self.publish_pose(translation=translation, rotation=rotation)
                 self.publish_image(image=marked_frame)
             except:
-                self.get_logger().info("frame not processed")
-                pass
+                self.get_logger().error(f"Error processing frame")
         else:
             pass
 
