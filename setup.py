@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "imgpose_pub = control_dronecam.pose_aruco.imgpose_pub:main",
             "test = control_dronecam.pose_aruco.test:main",
+            "init_parrot = control_dronecam.init_parrot.init_parrot:main",
             "control_parrot_keyboard = control_dronecam.control_parrot.control_parrot_keyboard:main",
             "keyboad_publish = control_dronecam.control_parrot.keyboad_publish:main",
             "control_parrot_aruco = control_dronecam.control_parrot.control_parrot_aruco:main",

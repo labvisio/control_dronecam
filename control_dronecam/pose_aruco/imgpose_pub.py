@@ -1,7 +1,6 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from message_filters import ApproximateTimeSynchronizer, SimpleFilter
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Vector3Stamped
