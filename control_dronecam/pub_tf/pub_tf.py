@@ -25,17 +25,19 @@ def euler_to_quaternion(roll, pitch, yaw):
     return (qx, qy, qz, qw)
 
 
-class OdomPublisher(Node):
+class TfPublisher(Node):
     def __init__(self) -> None:
-        super().__init__("odom_publisher")
+        super().__init__("tf_publisher")
         self.position_x = 0.0
         self.position_y = 0.0
-        self.yaw = None
+        self.yaw_drone = None
         self.initial_yaw_received = False
+        self.msg_rpy_gimbal = False
         self.previous_time = self.get_clock().now()
         self.tf_broadcaster = TransformBroadcaster(self)
         self.setup_subscribers()
         self.setup_publishers()
+        self.get_logger().info("Transformation package initialized")
 
     def setup_subscribers(self) -> None:
         qos_profile = QoSProfile(
@@ -44,34 +46,41 @@ class OdomPublisher(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
         self.create_subscription(
-            Vector3Stamped,
-            "/anafi/drone/speed",
-            self.velocity_callback,
-            qos_profile,
+            msg_type=Vector3Stamped,
+            topic="/anafi/drone/speed",
+            callback=self.velocity_callback,
+            qos_profile=qos_profile,
         )
         self.create_subscription(
-            Float32,
-            "/anafi/drone/altitude",
-            self.altitude_callback,
-            qos_profile,
+            msg_type=Float32,
+            topic="/anafi/drone/altitude",
+            callback=self.altitude_callback,
+            qos_profile=qos_profile,
         )
         self.create_subscription(
-            Vector3Stamped,
-            "/anafi/drone/rpy",
-            self.rpy_callback,
-            qos_profile,
+            msg_type=Vector3Stamped,
+            topic="/anafi/drone/rpy",
+            callback=self.rpy_drone_callback,
+            qos_profile=qos_profile,
+        )
+        self.create_subscription(
+            msg_type=Vector3Stamped,
+            topic="anafi/gimbal/rpy_slow/relative",
+            callback=self.rpy_gimbal_callback,
+            qos_profile=qos_profile,
         )
         self.create_timer(
-            timer_period_sec=0.1,
-            callback=self.publish_odometry_message,
+            timer_period_sec=0.033,
+            callback=self.publish_tf_message,
         )
 
     def setup_publishers(self) -> None:
         self.odom_publisher = self.create_publisher(
-            Odometry,
-            "/anafi/drone/odom",
+            msg_type=Odometry,
+            topic="/anafi/drone/odom",
             qos_profile=10,
         )
+        self.get_logger().info("Published odometry")
 
     def velocity_callback(self, msg: Vector3Stamped) -> None:
         self.vel_drone_x = msg.vector.x
@@ -81,39 +90,52 @@ class OdomPublisher(Node):
     def altitude_callback(self, msg: Float32) -> None:
         self.altitude = msg.data
 
-    def rpy_callback(self, msg: Vector3Stamped) -> None:
-        self.roll = np.radians(msg.vector.x)
-        self.pitch = np.radians(msg.vector.y)
+    def rpy_drone_callback(self, msg: Vector3Stamped) -> None:
+        self.roll_drone = np.radians(msg.vector.x)
+        self.pitch_drone = np.radians(msg.vector.y)
         if not self.initial_yaw_received:
             self.initial_yaw = msg.vector.z
             self.initial_yaw_received = True
         else:
-            self.yaw = np.radians(msg.vector.z - self.initial_yaw)
+            self.yaw_drone = np.radians(msg.vector.z - self.initial_yaw)
 
-    def publish_odometry_message(self) -> None:
-        if self.yaw is None:
+    def rpy_gimbal_callback(self, msg: Vector3Stamped) -> None:
+        self.msg_rpy_gimbal = True
+        self.roll_gimbal = np.radians(msg.vector.x)
+        self.pitch_gimbal = np.radians(msg.vector.y)
+        self.yaw_gimbal = np.radians(msg.vector.z)
+
+    def publish_tf_message(self) -> None:
+        if self.yaw_drone is None:
             return
         self.current_time = self.get_clock().now()
         self.dt = (self.current_time - self.previous_time).nanoseconds / 1e9
         self.previous_time = self.current_time
+        self.quaternion = euler_to_quaternion(
+            self.roll_drone,
+            self.pitch_drone,
+            self.yaw_drone,
+        )
+        if self.msg_rpy_gimbal:
+            self.quaternion_gimbal = euler_to_quaternion(
+                self.roll_gimbal - self.roll_drone,
+                self.pitch_gimbal - self.pitch_drone,
+                self.yaw_gimbal,
+            )
+            self.publish_tf_baselink2cam()
         self.update_position()
         self.publish_pose()
-        self.publish_tf()
+        self.publish_tf_odom2baselink()
 
     def update_position(self) -> None:
         velocity_vector = np.array([[self.vel_drone_x], [self.vel_drone_y]])
         rotation_matrix = np.array(
             [
-                [np.cos(self.yaw), -np.sin(self.yaw)],
-                [np.sin(self.yaw), np.cos(self.yaw)],
+                [np.cos(self.yaw_drone), -np.sin(self.yaw_drone)],
+                [np.sin(self.yaw_drone), np.cos(self.yaw_drone)],
             ]
         )
         global_velocity = rotation_matrix @ velocity_vector
-        self.quaternion = euler_to_quaternion(
-            self.roll,
-            self.pitch,
-            self.yaw,
-        )
         self.position_x += global_velocity[0][0] * self.dt
         self.position_y += global_velocity[1][0] * self.dt
 
@@ -134,7 +156,7 @@ class OdomPublisher(Node):
         odom_msg.twist.twist.angular.z = self.vel_drone_z
         self.odom_publisher.publish(odom_msg)
 
-    def publish_tf(self) -> None:
+    def publish_tf_odom2baselink(self) -> None:
         tf = TransformStamped()
         tf.header = Header()
         tf.header.stamp = self.current_time.to_msg()
@@ -149,10 +171,25 @@ class OdomPublisher(Node):
         tf.transform.rotation.w = self.quaternion[3]
         self.tf_broadcaster.sendTransform(tf)
 
+    def publish_tf_baselink2cam(self) -> None:
+        tf = TransformStamped()
+        tf.header = Header()
+        tf.header.stamp = self.current_time.to_msg()
+        tf.header.frame_id = "base_link"
+        tf.child_frame_id = "cam"
+        tf.transform.translation.x = 0.05
+        tf.transform.translation.y = 0.0
+        tf.transform.translation.z = 0.0
+        tf.transform.rotation.x = self.quaternion_gimbal[0]
+        tf.transform.rotation.y = self.quaternion_gimbal[1]
+        tf.transform.rotation.z = self.quaternion_gimbal[2]
+        tf.transform.rotation.w = self.quaternion_gimbal[3]
+        self.tf_broadcaster.sendTransform(tf)
+
 
 def main() -> None:
     rclpy.init()
-    odom_publisher = OdomPublisher()
+    odom_publisher = TfPublisher()
     rclpy.spin(odom_publisher)
     odom_publisher.destroy_node()
     rclpy.shutdown()

@@ -18,7 +18,15 @@ def generate_launch_description():
         parameters=[config],
     )
 
+    init_parrot = Node(
+        package="control_dronecam",
+        namespace="",
+        executable="init_parrot",
+        name="drone_init",
+    )
+
     ld = LaunchDescription()
     ld.add_action(control_cam)
+    ld.add_action(init_parrot)
 
     return ld

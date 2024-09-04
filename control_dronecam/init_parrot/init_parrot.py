@@ -5,9 +5,9 @@ from anafi_ros_interfaces.msg import GimbalCommand
 from std_msgs.msg import Header
 
 
-class DroneControlClient(Node):
+class DroneInit(Node):
     def __init__(self):
-        super().__init__("drone_control_client")
+        super().__init__("drone_init")
         self.takeoff_client = self.create_service_client("/anafi/drone/takeoff")
         self.land_client = self.create_service_client("/anafi/drone/land")
         self.angle_gimbal = GimbalCommand()
@@ -52,9 +52,9 @@ class DroneControlClient(Node):
         return self.send_request(self.land_client, "landing")
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    drone_client = DroneControlClient()
+def main():
+    rclpy.init()
+    drone_client = DroneInit()
     drone_client.send_takeoff_request()
     try:
         rclpy.spin(drone_client)
